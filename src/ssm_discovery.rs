@@ -7,7 +7,7 @@ use crate::types::Endpoints;
 
 pub struct SSMEndpointDiscovery {
     client: Client,
-    parameter_prefixes: Vec<String>,
+    service_parameters: HashMap<String, String>,
 }
 
 impl SSMEndpointDiscovery {
@@ -20,18 +20,40 @@ impl SSMEndpointDiscovery {
         
         let client = Client::new(&config);
         
-        let parameter_prefixes = vec![
-            "/petstore/petlistadoptionsurl".to_string(),
-            "/petstore/searchapiurl".to_string(),
-            "/petstore/paymentapiurl".to_string(),
-            "/petstore/petfoodapiurl".to_string(),
-            "/petstore/petfoodcarturl".to_string(),
-        ];
+        // Map service names to their SSM parameter paths
+        let mut service_parameters = HashMap::new();
+        service_parameters.insert("petlistadoptions".to_string(), "/petstore/petlistadoptionsurl".to_string());
+        service_parameters.insert("petsearch".to_string(), "/petstore/searchapiurl".to_string());
+        service_parameters.insert("payforadoption".to_string(), "/petstore/paymentapiurl".to_string());
+        service_parameters.insert("petfood".to_string(), "/petstore/petfoodapiurl".to_string());
+        // Note: petfoodcarturl might be used for cart-specific operations if needed
+        service_parameters.insert("petfoodcart".to_string(), "/petstore/petfoodcarturl".to_string());
 
         Ok(Self {
             client,
-            parameter_prefixes,
+            service_parameters,
         })
+    }
+
+    /// Create a new SSMEndpointDiscovery with custom service parameter mappings
+    pub async fn with_custom_parameters(region: &str, service_parameters: HashMap<String, String>) -> anyhow::Result<Self> {
+        let region = aws_config::Region::new(region.to_string());
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .region(region)
+            .load()
+            .await;
+        
+        let client = Client::new(&config);
+
+        Ok(Self {
+            client,
+            service_parameters,
+        })
+    }
+
+    /// Get the current service parameter mappings
+    pub fn get_service_parameters(&self) -> &HashMap<String, String> {
+        &self.service_parameters
     }
 
     pub async fn discover_endpoints(&self) -> anyhow::Result<Endpoints> {
@@ -39,10 +61,11 @@ impl SSMEndpointDiscovery {
 
         let mut discovered = HashMap::new();
 
-        for prefix in &self.parameter_prefixes {
+        // Iterate through service name -> SSM parameter mappings
+        for (service_name, parameter_path) in &self.service_parameters {
             match self.client
                 .get_parameter()
-                .name(prefix)
+                .name(parameter_path)
                 .with_decryption(true)
                 .send()
                 .await
@@ -50,17 +73,16 @@ impl SSMEndpointDiscovery {
                 Ok(result) => {
                     if let Some(parameter) = result.parameter {
                         if let Some(value) = parameter.value {
-                            let service_name = prefix.split('/').nth(2).unwrap_or("unknown");
-                            discovered.insert(service_name.to_string(), value.clone());
+                            discovered.insert(service_name.clone(), value.clone());
                             println!("{}", format!("✓ Found {}: {}", service_name, value).green());
                         }
                     }
                 }
                 Err(err) => {
                     if err.to_string().contains("ParameterNotFound") {
-                        println!("{}", format!("⚠️  Parameter not found: {}", prefix).yellow());
+                        println!("{}", format!("⚠️  Parameter not found: {} ({})", service_name, parameter_path).yellow());
                     } else {
-                        println!("{}", format!("❌ Error fetching {}: {}", prefix, err).red());
+                        println!("{}", format!("❌ Error fetching {} ({}): {}", service_name, parameter_path, err).red());
                     }
                 }
             }

@@ -29,6 +29,10 @@ struct Args {
     /// Show what would be tested without executing
     #[arg(long)]
     dry_run: bool,
+
+    /// Enable verbose output showing individual request results
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -61,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         args.concurrent,
         endpoints,
         args.dry_run,
+        args.verbose,
     );
 
     // Run the load test

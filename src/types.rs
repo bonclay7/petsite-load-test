@@ -64,25 +64,24 @@ pub struct LoadTestResults {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Pet {
-    #[serde(rename = "petId")]
-    pub pet_id: String,
-    pub name: Option<String>,
-    pub breed: Option<String>,
+    pub petid: String,
+    pub availability: Option<String>,
+    pub cuteness_rate: Option<String>,
+    pub petcolor: Option<String>,
+    pub pettype: Option<String>,
+    pub price: Option<String>,
+    pub peturl: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PetListResponse {
-    pub pets: Vec<Pet>,
-}
+// The API returns an array of pets directly, not wrapped in an object
+pub type PetListResponse = Vec<Pet>;
 
-#[derive(Debug, Serialize)]
-pub struct AdoptionPayload {
-    #[serde(rename = "petId")]
+// Adoption is now done via query parameters, not JSON payload
+#[derive(Debug)]
+pub struct AdoptionRequest {
     pub pet_id: String,
-    #[serde(rename = "userId")]
+    pub pet_type: String,
     pub user_id: String,
-    #[serde(rename = "adoptionFee")]
-    pub adoption_fee: f64,
 }
 
 #[derive(Debug, Serialize)]
