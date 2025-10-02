@@ -84,19 +84,4 @@ pub struct AdoptionRequest {
     pub user_id: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct FoodCartPayload {
-    #[serde(rename = "userId")]
-    pub user_id: String,
-    #[serde(rename = "foodId")]
-    pub food_id: String,
-    pub quantity: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PayFoodPayload {
-    #[serde(rename = "userId")]
-    pub user_id: String,
-    #[serde(rename = "cartTotal")]
-    pub cart_total: f64,
-}
+// Food cart operations now use dynamic JSON payloads via serde_json::json!

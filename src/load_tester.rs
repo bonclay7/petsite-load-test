@@ -2,6 +2,7 @@ use colored::*;
 use futures::future::join_all;
 use rand::Rng;
 use reqwest::Client;
+use serde_json;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
@@ -13,6 +14,7 @@ pub struct LoadTester {
     endpoints: Endpoints,
     dry_run: bool,
     verbose: bool,
+    rampup_seconds: u64,
     client: Client,
 }
 
@@ -23,6 +25,7 @@ impl LoadTester {
         endpoints: Endpoints,
         dry_run: bool,
         verbose: bool,
+        rampup_seconds: u64,
     ) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
@@ -35,6 +38,7 @@ impl LoadTester {
             endpoints,
             dry_run,
             verbose,
+            rampup_seconds,
             client,
         }
     }
@@ -49,6 +53,27 @@ impl LoadTester {
         println!("{}", "\n🎯 Starting load test...".blue());
 
         let users = self.generate_users();
+        let total_scenarios = self.user_count * self.concurrent_requests;
+
+        if self.rampup_seconds > 0 {
+            println!(
+                "{}",
+                format!(
+                    "📈 Ramping up {} scenarios over {} seconds...",
+                    total_scenarios, self.rampup_seconds
+                ).cyan()
+            );
+            self.run_rampup_test(users).await
+        } else {
+            println!(
+                "{}",
+                format!("⚡ Running {} concurrent scenarios...", total_scenarios).yellow()
+            );
+            self.run_immediate_test(users).await
+        }
+    }
+
+    async fn run_immediate_test(&self, users: Vec<String>) -> anyhow::Result<Vec<UserScenarioResult>> {
         let mut all_futures = Vec::new();
 
         // Create concurrent futures for all user scenarios
@@ -59,11 +84,60 @@ impl LoadTester {
             }
         }
 
+        let results = join_all(all_futures).await;
+        Ok(results)
+    }
+
+    async fn run_rampup_test(&self, users: Vec<String>) -> anyhow::Result<Vec<UserScenarioResult>> {
+        use tokio::time::{sleep, Duration, Instant};
+        
+        let total_scenarios = self.user_count * self.concurrent_requests;
+        let rampup_interval = Duration::from_millis((self.rampup_seconds * 1000) / total_scenarios as u64);
+        
+        let mut all_futures = Vec::new();
+        let mut scenario_count = 0;
+        let start_time = Instant::now();
+
         println!(
             "{}",
-            format!("⚡ Running {} concurrent scenarios...", all_futures.len()).yellow()
+            format!(
+                "⏱️  Starting new scenario every {}ms",
+                rampup_interval.as_millis()
+            ).bright_black()
         );
 
+        // Ramp up scenarios gradually
+        for round in 0..self.concurrent_requests {
+            for user_id in &users {
+                scenario_count += 1;
+                
+                if self.verbose {
+                    println!(
+                        "{}",
+                        format!(
+                            "[RAMP-UP] Starting scenario {}/{} for {} ({}ms elapsed)",
+                            scenario_count, total_scenarios, user_id, start_time.elapsed().as_millis()
+                        ).bright_black()
+                    );
+                }
+
+                // Start the scenario without spawning a task
+                let future = self.run_scenario_for_user(user_id.clone());
+                all_futures.push(future);
+
+                // Sleep between scenario starts (except for the last one)
+                if scenario_count < total_scenarios {
+                    sleep(rampup_interval).await;
+                }
+            }
+        }
+
+        println!(
+            "{}",
+            format!("🚀 All {} scenarios started, waiting for completion...", total_scenarios).green()
+        );
+
+        // Wait for all scenarios to complete using join_all
         let results = join_all(all_futures).await;
         Ok(results)
     }
@@ -169,8 +243,21 @@ impl LoadTester {
             .await;
         requests.push(adoption_result);
 
-        // Step 6: Pet food operations
-        // List all food
+        // Step 6: Check adoptions list (verify adoption was recorded)
+        let adoptions_check_result = self
+            .make_request(
+                "GET",
+                &self.endpoints.petlistadoptions,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(adoptions_check_result);
+
+        // Step 7: Comprehensive Pet Food Testing
+        let petfood_base = self.endpoints.petfood.replace("/api/foods", "");
+        
+        // 7.1: List all foods
         let food_list_result = self
             .make_request(
                 "GET",
@@ -181,50 +268,160 @@ impl LoadTester {
             .await;
         requests.push(food_list_result);
 
-        // Add food to cart - use base petfood URL with /cart path
-        let add_food_payload = FoodCartPayload {
-            user_id: user_id.clone(),
-            food_id: "food001".to_string(),
-            quantity: 2,
-        };
-        let cart_url = self.endpoints.petfood.replace("/api/foods", "/api/cart");
-        let add_food_result = self
-            .make_request(
-                "POST",
-                &cart_url,
-                &user_id,
-                Some(add_food_payload),
-            )
-            .await;
-        requests.push(add_food_result);
+        // 7.2: Search foods with filters (random combinations)
+        let pet_types_food = ["puppy", "kitten", "bunny"];
+        let max_prices = ["10", "25", "50", "100"];
+        let search_terms = ["royal", "premium", "organic", "chicken"];
+        
+        let random_pet_type_food = pet_types_food[rng.gen_range(0..pet_types_food.len())];
+        let random_max_price = max_prices[rng.gen_range(0..max_prices.len())];
+        let random_search = search_terms[rng.gen_range(0..search_terms.len())];
 
-        // Pay for food - use base petfood URL with /pay path
-        let pay_food_payload = PayFoodPayload {
-            user_id: user_id.clone(),
-            cart_total: 25.99,
-        };
-        let pay_url = self.endpoints.petfood.replace("/api/foods", "/api/pay");
-        let pay_food_result = self
+        // Filter by pet type and price
+        let filter_url = format!("{}?pettype={}&max_price={}", self.endpoints.petfood, random_pet_type_food, random_max_price);
+        let filter_result = self
             .make_request(
-                "POST",
-                &pay_url,
-                &user_id,
-                Some(pay_food_payload),
-            )
-            .await;
-        requests.push(pay_food_result);
-
-        // Step 7: Cleanup (optional DELETE operations)
-        let cleanup_url = self.endpoints.payforadoption.replace("/api/completeadoption", &format!("/api/adoption/{}", selected_pet_id));
-        let cleanup_result = self
-            .make_request(
-                "DELETE",
-                &cleanup_url,
+                "GET",
+                &filter_url,
                 &user_id,
                 None::<()>,
             )
             .await;
-        requests.push(cleanup_result);
+        requests.push(filter_result);
+
+        // Search by term
+        let search_url = format!("{}?search={}", self.endpoints.petfood, random_search);
+        let search_result = self
+            .make_request(
+                "GET",
+                &search_url,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(search_result);
+
+        // 7.3: Get specific food by ID (simulate getting a food ID from previous responses)
+        let food_ids = ["F046a4eca", "Fecd30d31", "F36a222eb", "Fc7f447a1", "F233c473c", "Ffb5ef0e2"];
+        let random_food_id = food_ids[rng.gen_range(0..food_ids.len())];
+        let food_detail_url = format!("{}/{}", self.endpoints.petfood, random_food_id);
+        let food_detail_result = self
+            .make_request(
+                "GET",
+                &food_detail_url,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(food_detail_result);
+
+        // 7.4: Cart operations
+        // List current cart
+        let cart_list_url = format!("{}/api/cart/{}", petfood_base, user_id);
+        let cart_list_result = self
+            .make_request(
+                "GET",
+                &cart_list_url,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(cart_list_result);
+
+        // Add item to cart
+        let add_to_cart_url = format!("{}/api/cart/{}/items", petfood_base, user_id);
+        let add_cart_payload = serde_json::json!({
+            "food_id": random_food_id,
+            "quantity": rng.gen_range(1..5)
+        });
+        let add_cart_result = self
+            .make_request(
+                "POST",
+                &add_to_cart_url,
+                &user_id,
+                Some(add_cart_payload),
+            )
+            .await;
+        requests.push(add_cart_result);
+
+        // Update item quantity in cart
+        let update_cart_url = format!("{}/api/cart/{}/items/{}", petfood_base, user_id, random_food_id);
+        let update_cart_payload = serde_json::json!({
+            "quantity": rng.gen_range(1..10)
+        });
+        let update_cart_result = self
+            .make_request(
+                "PUT",
+                &update_cart_url,
+                &user_id,
+                Some(update_cart_payload),
+            )
+            .await;
+        requests.push(update_cart_result);
+
+        // 7.5: Checkout process
+        let checkout_url = format!("{}/api/cart/{}/checkout", petfood_base, user_id);
+        let checkout_payload = serde_json::json!({
+            "payment_method": {
+                "CreditCard": {
+                    "card_number": "4111111111111111",
+                    "expiry_month": 12,
+                    "expiry_year": 2025,
+                    "cvv": "123",
+                    "cardholder_name": format!("User {}", user_id)
+                }
+            },
+            "shipping_address": {
+                "name": format!("User {}", user_id),
+                "street": "123 Main St",
+                "city": "Seattle",
+                "state": "WA",
+                "zip_code": "98101",
+                "country": "USA"
+            },
+            "billing_address": {
+                "name": format!("User {}", user_id),
+                "street": "123 Main St",
+                "city": "Seattle",
+                "state": "WA",
+                "zip_code": "98101",
+                "country": "USA"
+            }
+        });
+        let checkout_result = self
+            .make_request(
+                "POST",
+                &checkout_url,
+                &user_id,
+                Some(checkout_payload),
+            )
+            .await;
+        requests.push(checkout_result);
+
+        // Step 8: Cleanup operations
+        // Empty the cart
+        let empty_cart_url = format!("{}/api/cart/{}", petfood_base, user_id);
+        let empty_cart_result = self
+            .make_request(
+                "DELETE",
+                &empty_cart_url,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(empty_cart_result);
+
+        // Clean up adoption (optional DELETE operations)
+        let cleanup_adoption_url = self.endpoints.payforadoption.replace("/api/completeadoption", &format!("/api/adoption/{}", selected_pet_id));
+        let cleanup_adoption_result = self
+            .make_request(
+                "DELETE",
+                &cleanup_adoption_url,
+                &user_id,
+                None::<()>,
+            )
+            .await;
+        requests.push(cleanup_adoption_result);
 
         // Check if any request failed
         success = requests.iter().all(|r| r.success);
@@ -383,6 +580,10 @@ impl LoadTester {
         println!("{}", format!("Average Response Time: {}ms", average_response_time.as_millis()).cyan());
         println!("{}", format!("Requests/Second: {:.1}", requests_per_second).magenta());
         println!("{}", format!("Total Test Time: {}ms", total_time.as_millis()).bright_black());
+        
+        if self.rampup_seconds > 0 {
+            println!("{}", format!("Ramp-up Period: {}s", self.rampup_seconds).bright_black());
+        }
 
         // Show detailed failed request information
         let failed_requests: Vec<&RequestResult> = all_requests.iter().filter(|r| !r.success).copied().collect();

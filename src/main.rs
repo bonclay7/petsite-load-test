@@ -33,6 +33,10 @@ struct Args {
     /// Enable verbose output showing individual request results
     #[arg(short, long)]
     verbose: bool,
+
+    /// Ramp-up time in seconds to gradually increase load (0 = no ramp-up)
+    #[arg(long, default_value = "0")]
+    rampup: u64,
 }
 
 #[tokio::main]
@@ -66,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         endpoints,
         args.dry_run,
         args.verbose,
+        args.rampup,
     );
 
     // Run the load test
