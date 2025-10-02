@@ -89,21 +89,21 @@ impl LoadTester {
     }
 
     async fn run_rampup_test(&self, users: Vec<String>) -> anyhow::Result<Vec<UserScenarioResult>> {
-        use tokio::time::{sleep, Duration, Instant};
+        use tokio::time::{sleep, Duration};
         
         let total_scenarios = self.user_count * self.concurrent_requests;
         let rampup_interval = Duration::from_millis((self.rampup_seconds * 1000) / total_scenarios as u64);
         
         let mut all_futures = Vec::new();
         let mut scenario_count = 0;
-        let start_time = Instant::now();
+        let start_time = std::time::Instant::now();
 
         println!(
             "{}",
             format!(
                 "⏱️  Starting new scenario every {}ms",
                 rampup_interval.as_millis()
-            ).bright_black()
+            ).purple()
         );
 
         // Ramp up scenarios gradually
@@ -111,13 +111,26 @@ impl LoadTester {
             for user_id in &users {
                 scenario_count += 1;
                 
-                if self.verbose {
+                // Show progress for verbose mode or every 10 scenarios or first few
+                if self.verbose || scenario_count % 10 == 0 || scenario_count <= 5 {
                     println!(
                         "{}",
                         format!(
-                            "[RAMP-UP] Starting scenario {}/{} for {} ({}ms elapsed)",
-                            scenario_count, total_scenarios, user_id, start_time.elapsed().as_millis()
-                        ).bright_black()
+                            "[RAMP-UP] Starting scenario {}/{} for {} ({}s elapsed)",
+                            scenario_count, total_scenarios, user_id, start_time.elapsed().as_secs()
+                        ).purple()
+                    );
+                }
+
+                // Show milestone progress for large tests
+                if scenario_count % 100 == 0 || (scenario_count % 50 == 0 && total_scenarios > 200) {
+                    let progress_pct = (scenario_count as f64 / total_scenarios as f64) * 100.0;
+                    println!(
+                        "{}",
+                        format!(
+                            "📈 Ramp-up Progress: {:.1}% ({}/{}) - {}s elapsed",
+                            progress_pct, scenario_count, total_scenarios, start_time.elapsed().as_secs()
+                        ).cyan()
                     );
                 }
 
@@ -137,8 +150,135 @@ impl LoadTester {
             format!("🚀 All {} scenarios started, waiting for completion...", total_scenarios).green()
         );
 
-        // Wait for all scenarios to complete using join_all
-        let results = join_all(all_futures).await;
+        // Start execution monitoring for long-running tests
+        if total_scenarios > 20 || self.rampup_seconds > 30 {
+            self.run_with_progress_monitoring(all_futures, total_scenarios, start_time).await
+        } else {
+            // For small tests, just run normally
+            let results = join_all(all_futures).await;
+            Ok(results)
+        }
+    }
+
+    async fn run_with_progress_monitoring(
+        &self, 
+        all_futures: Vec<impl std::future::Future<Output = UserScenarioResult>>, 
+        total_scenarios: usize,
+        start_time: Instant
+    ) -> anyhow::Result<Vec<UserScenarioResult>> {
+        use tokio::time::{sleep, Duration};
+        use std::sync::{Arc, Mutex};
+        
+        // Wrap futures to track completion
+        let completed_count = Arc::new(Mutex::new(0));
+        let total_requests = Arc::new(Mutex::new(0));
+        let failed_requests = Arc::new(Mutex::new(0));
+        
+        let monitored_futures: Vec<_> = all_futures.into_iter().map(|future| {
+            let completed_count = completed_count.clone();
+            let total_requests = total_requests.clone();
+            let failed_requests = failed_requests.clone();
+            
+            async move {
+                let result = future.await;
+                
+                // Update counters
+                {
+                    let mut count = completed_count.lock().unwrap();
+                    *count += 1;
+                }
+                {
+                    let mut total = total_requests.lock().unwrap();
+                    *total += result.requests.len();
+                }
+                {
+                    let mut failed = failed_requests.lock().unwrap();
+                    *failed += result.requests.iter().filter(|r| !r.success).count();
+                }
+                
+                result
+            }
+        }).collect();
+
+        // Start progress monitoring task
+        let progress_task = {
+            let completed_count = completed_count.clone();
+            let total_requests = total_requests.clone();
+            let failed_requests = failed_requests.clone();
+            
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(10)).await;
+                    
+                    let completed = {
+                        let count = completed_count.lock().unwrap();
+                        *count
+                    };
+                    
+                    if completed >= total_scenarios {
+                        break;
+                    }
+                    
+                    let total_reqs = {
+                        let total = total_requests.lock().unwrap();
+                        *total
+                    };
+                    
+                    let failed_reqs = {
+                        let failed = failed_requests.lock().unwrap();
+                        *failed
+                    };
+                    
+                    let elapsed = start_time.elapsed();
+                    let rps = if elapsed.as_secs() > 0 {
+                        total_reqs as f64 / elapsed.as_secs() as f64
+                    } else {
+                        0.0
+                    };
+                    
+                    let progress_pct = (completed as f64 / total_scenarios as f64) * 100.0;
+                    
+                    println!(
+                        "{}",
+                        format!(
+                            "📊 Execution Progress: {:.1}% ({}/{}) | {} requests ({} failed) | {:.1} req/s | {}s elapsed",
+                            progress_pct, completed, total_scenarios, 
+                            total_reqs, failed_reqs, rps, elapsed.as_secs()
+                        ).cyan()
+                    );
+                }
+            })
+        };
+
+        // Wait for all scenarios to complete
+        let results = join_all(monitored_futures).await;
+        
+        // Stop progress monitoring
+        progress_task.abort();
+        
+        // Final summary
+        let final_completed = {
+            let count = completed_count.lock().unwrap();
+            *count
+        };
+        let final_total_reqs = {
+            let total = total_requests.lock().unwrap();
+            *total
+        };
+        let final_failed_reqs = {
+            let failed = failed_requests.lock().unwrap();
+            *failed
+        };
+        
+        println!(
+            "{}",
+            format!(
+                "✅ All scenarios completed: {}/{} | {} total requests ({} successful, {} failed)",
+                final_completed, total_scenarios, final_total_reqs, 
+                final_total_reqs - final_failed_reqs, final_failed_reqs
+            ).green()
+        );
+        
         Ok(results)
     }
 
@@ -160,7 +300,7 @@ impl LoadTester {
         requests.push(list_all_pets_result.clone());
 
         // Step 2: Filter by color (random selection)
-        let colors = ["black", "brown", "white", "red", "blue"]; // Include some invalid colors
+        let colors = ["black", "brown", "purple", "red", "blue"]; // Include some invalid colors
         let mut rng = rand::thread_rng();
         let random_color = colors[rng.gen_range(0..colors.len())];
         let color_search_url = if self.endpoints.petsearch.ends_with('?') {
@@ -448,7 +588,7 @@ impl LoadTester {
         let start_time = Instant::now();
 
         if self.dry_run {
-            println!("{}", format!("[DRY RUN] {} {} ({})", method, url, user_id).bright_black());
+            println!("{}", format!("[DRY RUN] {} {} ({})", method, url, user_id).purple());
             return RequestResult {
                 method: method.to_string(),
                 url: url.to_string(),
@@ -570,7 +710,7 @@ impl LoadTester {
         };
 
         println!("{}", "\n📊 Load Test Results".green().bold());
-        println!("{}", "═".repeat(50).bright_black());
+        println!("{}", "═".repeat(50).purple());
 
         println!("{}", format!("Total Scenarios: {}", results.len()).blue());
         println!("{}", format!("Total Requests: {}", total_requests).blue());
@@ -579,17 +719,17 @@ impl LoadTester {
         println!("{}", format!("Success Rate: {:.1}%", success_rate).yellow());
         println!("{}", format!("Average Response Time: {}ms", average_response_time.as_millis()).cyan());
         println!("{}", format!("Requests/Second: {:.1}", requests_per_second).magenta());
-        println!("{}", format!("Total Test Time: {}ms", total_time.as_millis()).bright_black());
+        println!("{}", format!("Total Test Time: {}ms", total_time.as_millis()).purple());
         
         if self.rampup_seconds > 0 {
-            println!("{}", format!("Ramp-up Period: {}s", self.rampup_seconds).bright_black());
+            println!("{}", format!("Ramp-up Period: {}s", self.rampup_seconds).purple());
         }
 
         // Show detailed failed request information
         let failed_requests: Vec<&RequestResult> = all_requests.iter().filter(|r| !r.success).copied().collect();
         if !failed_requests.is_empty() {
             println!("{}", "\n❌ Failed Requests Details:".red().bold());
-            println!("{}", "─".repeat(80).bright_black());
+            println!("{}", "─".repeat(80).purple());
             
             for (i, request) in failed_requests.iter().enumerate() {
                 println!("{}", format!("{}. {} {} ({})", 
@@ -629,7 +769,7 @@ impl LoadTester {
 
         // Show request breakdown by endpoint
         println!("{}", "\n📈 Request Breakdown by Endpoint:".blue().bold());
-        println!("{}", "─".repeat(80).bright_black());
+        println!("{}", "─".repeat(80).purple());
         
         let mut endpoint_stats = std::collections::HashMap::new();
         for request in &all_requests {
@@ -655,6 +795,6 @@ impl LoadTester {
             }
         }
 
-        println!("{}", format!("\n{}", "═".repeat(50)).bright_black());
+        println!("{}", format!("\n{}", "═".repeat(50)).purple());
     }
 }
