@@ -17,17 +17,29 @@ impl SSMEndpointDiscovery {
             .region(region)
             .load()
             .await;
-        
+
         let client = Client::new(&config);
-        
+
         // Map service names to their SSM parameter paths
         let mut service_parameters = HashMap::new();
-        service_parameters.insert("petlistadoptions".to_string(), "/petstore/petlistadoptionsurl".to_string());
-        service_parameters.insert("petsearch".to_string(), "/petstore/searchapiurl".to_string());
-        service_parameters.insert("payforadoption".to_string(), "/petstore/paymentapiurl".to_string());
+        service_parameters.insert(
+            "petlistadoptions".to_string(),
+            "/petstore/petlistadoptionsurl".to_string(),
+        );
+        service_parameters.insert(
+            "petsearch".to_string(),
+            "/petstore/searchapiurl".to_string(),
+        );
+        service_parameters.insert(
+            "payforadoption".to_string(),
+            "/petstore/paymentapiurl".to_string(),
+        );
         service_parameters.insert("petfood".to_string(), "/petstore/petfoodapiurl".to_string());
         // Note: petfoodcarturl might be used for cart-specific operations if needed
-        service_parameters.insert("petfoodcart".to_string(), "/petstore/petfoodcarturl".to_string());
+        service_parameters.insert(
+            "petfoodcart".to_string(),
+            "/petstore/petfoodcarturl".to_string(),
+        );
 
         Ok(Self {
             client,
@@ -36,13 +48,16 @@ impl SSMEndpointDiscovery {
     }
 
     /// Create a new SSMEndpointDiscovery with custom service parameter mappings
-    pub async fn with_custom_parameters(region: &str, service_parameters: HashMap<String, String>) -> anyhow::Result<Self> {
+    pub async fn with_custom_parameters(
+        region: &str,
+        service_parameters: HashMap<String, String>,
+    ) -> anyhow::Result<Self> {
         let region = aws_config::Region::new(region.to_string());
         let config = aws_config::defaults(BehaviorVersion::latest())
             .region(region)
             .load()
             .await;
-        
+
         let client = Client::new(&config);
 
         Ok(Self {
@@ -63,7 +78,8 @@ impl SSMEndpointDiscovery {
 
         // Iterate through service name -> SSM parameter mappings
         for (service_name, parameter_path) in &self.service_parameters {
-            match self.client
+            match self
+                .client
                 .get_parameter()
                 .name(parameter_path)
                 .with_decryption(true)
@@ -80,9 +96,23 @@ impl SSMEndpointDiscovery {
                 }
                 Err(err) => {
                     if err.to_string().contains("ParameterNotFound") {
-                        println!("{}", format!("⚠️  Parameter not found: {} ({})", service_name, parameter_path).yellow());
+                        println!(
+                            "{}",
+                            format!(
+                                "⚠️  Parameter not found: {} ({})",
+                                service_name, parameter_path
+                            )
+                            .yellow()
+                        );
                     } else {
-                        println!("{}", format!("❌ Error fetching {} ({}): {}", service_name, parameter_path, err).red());
+                        println!(
+                            "{}",
+                            format!(
+                                "❌ Error fetching {} ({}): {}",
+                                service_name, parameter_path, err
+                            )
+                            .red()
+                        );
                     }
                 }
             }
@@ -94,25 +124,45 @@ impl SSMEndpointDiscovery {
         if let Some(endpoint) = discovered.get("petlistadoptions") {
             endpoints.petlistadoptions = endpoint.clone();
         } else {
-            println!("{}", format!("🔄 Using fallback for petlistadoptions: {}", endpoints.petlistadoptions).cyan());
+            println!(
+                "{}",
+                format!(
+                    "🔄 Using fallback for petlistadoptions: {}",
+                    endpoints.petlistadoptions
+                )
+                .cyan()
+            );
         }
 
         if let Some(endpoint) = discovered.get("petsearch") {
             endpoints.petsearch = endpoint.clone();
         } else {
-            println!("{}", format!("🔄 Using fallback for petsearch: {}", endpoints.petsearch).cyan());
+            println!(
+                "{}",
+                format!("🔄 Using fallback for petsearch: {}", endpoints.petsearch).cyan()
+            );
         }
 
         if let Some(endpoint) = discovered.get("payforadoption") {
             endpoints.payforadoption = endpoint.clone();
         } else {
-            println!("{}", format!("🔄 Using fallback for payforadoption: {}", endpoints.payforadoption).cyan());
+            println!(
+                "{}",
+                format!(
+                    "🔄 Using fallback for payforadoption: {}",
+                    endpoints.payforadoption
+                )
+                .cyan()
+            );
         }
 
         if let Some(endpoint) = discovered.get("petfood") {
             endpoints.petfood = endpoint.clone();
         } else {
-            println!("{}", format!("🔄 Using fallback for petfood: {}", endpoints.petfood).cyan());
+            println!(
+                "{}",
+                format!("🔄 Using fallback for petfood: {}", endpoints.petfood).cyan()
+            );
         }
 
         Ok(endpoints)

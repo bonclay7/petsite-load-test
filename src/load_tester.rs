@@ -46,16 +46,16 @@ impl LoadTester {
     fn generate_users(&self) -> Vec<String> {
         use rand::Rng;
         use std::collections::HashSet;
-        
+
         let mut rng = rand::thread_rng();
         let mut user_ids = HashSet::new();
-        
+
         // Generate unique random user IDs
         while user_ids.len() < self.user_count {
             let random_id = rng.gen_range(10000..99999);
             user_ids.insert(format!("user{:05}", random_id));
         }
-        
+
         user_ids.into_iter().collect()
     }
 
@@ -71,7 +71,8 @@ impl LoadTester {
                 format!(
                     "📈 Ramping up {} scenarios over {} seconds...",
                     total_scenarios, self.rampup_seconds
-                ).cyan()
+                )
+                .cyan()
             );
             self.run_rampup_test(users).await
         } else {
@@ -83,7 +84,10 @@ impl LoadTester {
         }
     }
 
-    async fn run_immediate_test(&self, users: Vec<String>) -> anyhow::Result<Vec<UserScenarioResult>> {
+    async fn run_immediate_test(
+        &self,
+        users: Vec<String>,
+    ) -> anyhow::Result<Vec<UserScenarioResult>> {
         let mut all_futures = Vec::new();
 
         // Create concurrent futures for all user scenarios
@@ -100,10 +104,11 @@ impl LoadTester {
 
     async fn run_rampup_test(&self, users: Vec<String>) -> anyhow::Result<Vec<UserScenarioResult>> {
         use tokio::time::{sleep, Duration};
-        
+
         let total_scenarios = self.user_count * self.concurrent_requests;
-        let rampup_interval = Duration::from_millis((self.rampup_seconds * 1000) / total_scenarios as u64);
-        
+        let rampup_interval =
+            Duration::from_millis((self.rampup_seconds * 1000) / total_scenarios as u64);
+
         let mut all_futures = Vec::new();
         let mut scenario_count = 0;
         let start_time = std::time::Instant::now();
@@ -113,34 +118,44 @@ impl LoadTester {
             format!(
                 "⏱️  Starting new scenario every {}ms",
                 rampup_interval.as_millis()
-            ).purple()
+            )
+            .purple()
         );
 
         // Ramp up scenarios gradually
         for round in 0..self.concurrent_requests {
             for user_id in &users {
                 scenario_count += 1;
-                
+
                 // Show progress for verbose mode or every 10 scenarios or first few
                 if self.verbose || scenario_count % 10 == 0 || scenario_count <= 5 {
                     println!(
                         "{}",
                         format!(
                             "[RAMP-UP] Starting scenario {}/{} for {} ({}s elapsed)",
-                            scenario_count, total_scenarios, user_id, start_time.elapsed().as_secs()
-                        ).purple()
+                            scenario_count,
+                            total_scenarios,
+                            user_id,
+                            start_time.elapsed().as_secs()
+                        )
+                        .purple()
                     );
                 }
 
                 // Show milestone progress for large tests
-                if scenario_count % 100 == 0 || (scenario_count % 50 == 0 && total_scenarios > 200) {
+                if scenario_count % 100 == 0 || (scenario_count % 50 == 0 && total_scenarios > 200)
+                {
                     let progress_pct = (scenario_count as f64 / total_scenarios as f64) * 100.0;
                     println!(
                         "{}",
                         format!(
                             "📈 Ramp-up Progress: {:.1}% ({}/{}) - {}s elapsed",
-                            progress_pct, scenario_count, total_scenarios, start_time.elapsed().as_secs()
-                        ).cyan()
+                            progress_pct,
+                            scenario_count,
+                            total_scenarios,
+                            start_time.elapsed().as_secs()
+                        )
+                        .cyan()
                     );
                 }
 
@@ -157,94 +172,108 @@ impl LoadTester {
 
         println!(
             "{}",
-            format!("🚀 All {} scenarios started, waiting for completion...", total_scenarios).green()
+            format!(
+                "🚀 All {} scenarios started, waiting for completion...",
+                total_scenarios
+            )
+            .green()
         );
 
         // Always use progress monitoring for better user experience
-        self.run_with_progress_monitoring(all_futures, total_scenarios, start_time).await
+        self.run_with_progress_monitoring(all_futures, total_scenarios, start_time)
+            .await
     }
 
     async fn run_with_progress_monitoring(
-        &self, 
-        all_futures: Vec<impl std::future::Future<Output = UserScenarioResult>>, 
+        &self,
+        all_futures: Vec<impl std::future::Future<Output = UserScenarioResult>>,
         total_scenarios: usize,
-        start_time: Instant
+        start_time: Instant,
     ) -> anyhow::Result<Vec<UserScenarioResult>> {
-        use tokio::time::{sleep, Duration};
         use std::sync::{Arc, Mutex};
-        
+        use tokio::time::{sleep, Duration};
+
         // Wrap futures to track completion
         let completed_count = Arc::new(Mutex::new(0));
         let total_requests = Arc::new(Mutex::new(0));
         let failed_requests = Arc::new(Mutex::new(0));
-        
-        let monitored_futures: Vec<_> = all_futures.into_iter().map(|future| {
-            let completed_count = completed_count.clone();
-            let total_requests = total_requests.clone();
-            let failed_requests = failed_requests.clone();
-            
-            async move {
-                let result = future.await;
-                
-                // Update counters
-                {
-                    let mut count = completed_count.lock().unwrap();
-                    *count += 1;
+
+        let monitored_futures: Vec<_> = all_futures
+            .into_iter()
+            .map(|future| {
+                let completed_count = completed_count.clone();
+                let total_requests = total_requests.clone();
+                let failed_requests = failed_requests.clone();
+
+                async move {
+                    let result = future.await;
+
+                    // Update counters
+                    {
+                        let mut count = completed_count.lock().unwrap();
+                        *count += 1;
+                    }
+                    {
+                        let mut total = total_requests.lock().unwrap();
+                        *total += result.requests.len();
+                    }
+                    {
+                        let mut failed = failed_requests.lock().unwrap();
+                        *failed += result.requests.iter().filter(|r| !r.success).count();
+                    }
+
+                    result
                 }
-                {
-                    let mut total = total_requests.lock().unwrap();
-                    *total += result.requests.len();
-                }
-                {
-                    let mut failed = failed_requests.lock().unwrap();
-                    *failed += result.requests.iter().filter(|r| !r.success).count();
-                }
-                
-                result
-            }
-        }).collect();
+            })
+            .collect();
 
         // Start progress monitoring task
         let progress_task = {
             let completed_count = completed_count.clone();
             let total_requests = total_requests.clone();
             let failed_requests = failed_requests.clone();
-            
+
             tokio::spawn(async move {
                 // Adjust update frequency based on test size
-                let update_interval = if total_scenarios > 100 { 10 } else if total_scenarios > 20 { 5 } else { 2 };
-                
+                let update_interval = if total_scenarios > 100 {
+                    10
+                } else if total_scenarios > 20 {
+                    5
+                } else {
+                    2
+                };
+
                 loop {
                     sleep(Duration::from_secs(update_interval)).await;
-                    
+
                     let completed = {
                         let count = completed_count.lock().unwrap();
                         *count
                     };
-                    
+
                     if completed >= total_scenarios {
                         break;
                     }
-                    
+
                     let total_reqs = {
                         let total = total_requests.lock().unwrap();
                         *total
                     };
-                    
+
                     let failed_reqs = {
                         let failed = failed_requests.lock().unwrap();
                         *failed
                     };
-                    
+
                     let elapsed = start_time.elapsed();
                     let rps = if elapsed.as_secs() > 0 {
                         total_reqs as f64 / elapsed.as_secs() as f64
                     } else {
                         0.0
                     };
-                    
+
                     let progress_pct = (completed as f64 / total_scenarios as f64) * 100.0;
-                    
+
                     println!(
                         "{}",
                         format!(
@@ -259,10 +288,10 @@ impl LoadTester {
 
         // Wait for all scenarios to complete
         let results = join_all(monitored_futures).await;
-        
+
         // Stop progress monitoring
         progress_task.abort();
-        
+
         // Final summary
         let final_completed = {
             let count = completed_count.lock().unwrap();
@@ -276,16 +305,20 @@ impl LoadTester {
             let failed = failed_requests.lock().unwrap();
             *failed
         };
-        
+
         println!(
             "{}",
             format!(
                 "✅ All scenarios completed: {}/{} | {} total requests ({} successful, {} failed)",
-                final_completed, total_scenarios, final_total_reqs, 
-                final_total_reqs - final_failed_reqs, final_failed_reqs
-            ).green()
+                final_completed,
+                total_scenarios,
+                final_total_reqs,
+                final_total_reqs - final_failed_reqs,
+                final_failed_reqs
+            )
+            .green()
         );
-        
+
         Ok(results)
     }
 
@@ -297,12 +330,7 @@ impl LoadTester {
 
         // Step 1: List all pets via petsearch
         let list_all_pets_result = self
-            .make_request(
-                "GET",
-                &self.endpoints.petsearch,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &self.endpoints.petsearch, &user_id, None::<()>)
             .await;
         requests.push(list_all_pets_result.clone());
 
@@ -316,12 +344,7 @@ impl LoadTester {
             format!("{}?petcolor={}", self.endpoints.petsearch, random_color)
         };
         let color_search_result = self
-            .make_request(
-                "GET",
-                &color_search_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &color_search_url, &user_id, None::<()>)
             .await;
         requests.push(color_search_result);
 
@@ -334,12 +357,7 @@ impl LoadTester {
             format!("{}?pettype={}", self.endpoints.petsearch, random_pet_type)
         };
         let type_search_result = self
-            .make_request(
-                "GET",
-                &type_search_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &type_search_url, &user_id, None::<()>)
             .await;
         requests.push(type_search_result);
 
@@ -355,12 +373,7 @@ impl LoadTester {
                 format!("{}?pettype={}", self.endpoints.petsearch, pet_type)
             };
             let specific_search_result = self
-                .make_request(
-                    "GET",
-                    &specific_search_url,
-                    &user_id,
-                    None::<()>,
-                )
+                .make_request("GET", &specific_search_url, &user_id, None::<()>)
                 .await;
             requests.push(specific_search_result.clone());
 
@@ -393,18 +406,10 @@ impl LoadTester {
             // Pay for adoption of this pet
             let adoption_url = format!(
                 "{}?petId={}&petType={}&userId={}",
-                self.endpoints.payforadoption,
-                selected_pet_id,
-                pet_type,
-                user_id
+                self.endpoints.payforadoption, selected_pet_id, pet_type, user_id
             );
             let adoption_result = self
-                .make_request(
-                    "POST",
-                    &adoption_url,
-                    &user_id,
-                    None::<()>,
-                )
+                .make_request("POST", &adoption_url, &user_id, None::<()>)
                 .await;
             requests.push(adoption_result);
 
@@ -425,15 +430,10 @@ impl LoadTester {
 
         // Step 6: Comprehensive Pet Food Testing
         let petfood_base = self.endpoints.petfood.replace("/api/foods", "");
-        
+
         // 6.1: List all foods
         let food_list_result = self
-            .make_request(
-                "GET",
-                &self.endpoints.petfood,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &self.endpoints.petfood, &user_id, None::<()>)
             .await;
         requests.push(food_list_result);
 
@@ -441,46 +441,41 @@ impl LoadTester {
         let pet_types_food = ["puppy", "kitten", "bunny"];
         let max_prices = ["10", "25", "50", "100"];
         let search_terms = ["royal", "premium", "organic", "chicken"];
-        
+
         let random_pet_type_food = pet_types_food[rng.gen_range(0..pet_types_food.len())];
         let random_max_price = max_prices[rng.gen_range(0..max_prices.len())];
         let random_search = search_terms[rng.gen_range(0..search_terms.len())];
 
         // Filter by pet type and price
-        let filter_url = format!("{}?pettype={}&max_price={}", self.endpoints.petfood, random_pet_type_food, random_max_price);
+        let filter_url = format!(
+            "{}?pettype={}&max_price={}",
+            self.endpoints.petfood, random_pet_type_food, random_max_price
+        );
         let filter_result = self
-            .make_request(
-                "GET",
-                &filter_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &filter_url, &user_id, None::<()>)
             .await;
         requests.push(filter_result);
 
         // Search by term
         let search_url = format!("{}?search={}", self.endpoints.petfood, random_search);
         let search_result = self
-            .make_request(
-                "GET",
-                &search_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &search_url, &user_id, None::<()>)
             .await;
         requests.push(search_result);
 
         // 6.3: Get specific food by ID (simulate getting a food ID from previous responses)
-        let food_ids = ["F046a4eca", "Fecd30d31", "F36a222eb", "Fc7f447a1", "F233c473c", "Ffb5ef0e2"];
+        let food_ids = [
+            "F046a4eca",
+            "Fecd30d31",
+            "F36a222eb",
+            "Fc7f447a1",
+            "F233c473c",
+            "Ffb5ef0e2",
+        ];
         let random_food_id = food_ids[rng.gen_range(0..food_ids.len())];
         let food_detail_url = format!("{}/{}", self.endpoints.petfood, random_food_id);
         let food_detail_result = self
-            .make_request(
-                "GET",
-                &food_detail_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &food_detail_url, &user_id, None::<()>)
             .await;
         requests.push(food_detail_result);
 
@@ -488,12 +483,7 @@ impl LoadTester {
         // List current cart
         let cart_list_url = format!("{}/api/cart/{}", petfood_base, user_id);
         let cart_list_result = self
-            .make_request(
-                "GET",
-                &cart_list_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("GET", &cart_list_url, &user_id, None::<()>)
             .await;
         requests.push(cart_list_result);
 
@@ -504,27 +494,20 @@ impl LoadTester {
             "quantity": rng.gen_range(1..5)
         });
         let add_cart_result = self
-            .make_request(
-                "POST",
-                &add_to_cart_url,
-                &user_id,
-                Some(add_cart_payload),
-            )
+            .make_request("POST", &add_to_cart_url, &user_id, Some(add_cart_payload))
             .await;
         requests.push(add_cart_result);
 
         // Update item quantity in cart
-        let update_cart_url = format!("{}/api/cart/{}/items/{}", petfood_base, user_id, random_food_id);
+        let update_cart_url = format!(
+            "{}/api/cart/{}/items/{}",
+            petfood_base, user_id, random_food_id
+        );
         let update_cart_payload = serde_json::json!({
             "quantity": rng.gen_range(1..10)
         });
         let update_cart_result = self
-            .make_request(
-                "PUT",
-                &update_cart_url,
-                &user_id,
-                Some(update_cart_payload),
-            )
+            .make_request("PUT", &update_cart_url, &user_id, Some(update_cart_payload))
             .await;
         requests.push(update_cart_result);
 
@@ -558,12 +541,7 @@ impl LoadTester {
             }
         });
         let checkout_result = self
-            .make_request(
-                "POST",
-                &checkout_url,
-                &user_id,
-                Some(checkout_payload),
-            )
+            .make_request("POST", &checkout_url, &user_id, Some(checkout_payload))
             .await;
         requests.push(checkout_result);
 
@@ -571,25 +549,18 @@ impl LoadTester {
         // Empty the cart
         let empty_cart_url = format!("{}/api/cart/{}", petfood_base, user_id);
         let empty_cart_result = self
-            .make_request(
-                "DELETE",
-                &empty_cart_url,
-                &user_id,
-                None::<()>,
-            )
+            .make_request("DELETE", &empty_cart_url, &user_id, None::<()>)
             .await;
         requests.push(empty_cart_result);
 
         // Clean up all adoptions (optional DELETE operations)
         for (pet_id, _pet_type) in adopted_pets {
-            let cleanup_adoption_url = self.endpoints.payforadoption.replace("/api/completeadoption", &format!("/api/adoption/{}", pet_id));
+            let cleanup_adoption_url = self.endpoints.payforadoption.replace(
+                "/api/completeadoption",
+                &format!("/api/adoption/{}", pet_id),
+            );
             let cleanup_adoption_result = self
-                .make_request(
-                    "DELETE",
-                    &cleanup_adoption_url,
-                    &user_id,
-                    None::<()>,
-                )
+                .make_request("DELETE", &cleanup_adoption_url, &user_id, None::<()>)
                 .await;
             requests.push(cleanup_adoption_result);
         }
@@ -619,7 +590,10 @@ impl LoadTester {
         let start_time = Instant::now();
 
         if self.dry_run {
-            println!("{}", format!("[DRY RUN] {} {} ({})", method, url, user_id).purple());
+            println!(
+                "{}",
+                format!("[DRY RUN] {} {} ({})", method, url, user_id).purple()
+            );
             return RequestResult {
                 method: method.to_string(),
                 url: url.to_string(),
@@ -652,14 +626,15 @@ impl LoadTester {
                 _ => return Err(anyhow::anyhow!("Unsupported HTTP method: {}", method)),
             };
 
-            request_builder = request_builder.header("User-Agent", format!("LoadTester-{}", user_id));
+            request_builder =
+                request_builder.header("User-Agent", format!("LoadTester-{}", user_id));
 
             let response = request_builder.send().await?;
             let status = response.status().as_u16();
-            
+
             // Consume the response body to complete the request
             let _body = response.text().await?;
-            
+
             Ok(status)
         };
 
@@ -696,13 +671,31 @@ impl LoadTester {
         // Verbose logging
         if self.verbose {
             if result.success {
-                println!("{}", format!("[{}] {} {} - {} ({}ms)", 
-                    user_id, method, url, result.status, result.response_time.as_millis()).green());
+                println!(
+                    "{}",
+                    format!(
+                        "[{}] {} {} - {} ({}ms)",
+                        user_id,
+                        method,
+                        url,
+                        result.status,
+                        result.response_time.as_millis()
+                    )
+                    .green()
+                );
             } else {
-                println!("{}", format!("[{}] {} {} - FAILED: {} ({}ms)", 
-                    user_id, method, url, 
-                    result.error.as_deref().unwrap_or("Unknown error"), 
-                    result.response_time.as_millis()).red());
+                println!(
+                    "{}",
+                    format!(
+                        "[{}] {} {} - FAILED: {} ({}ms)",
+                        user_id,
+                        method,
+                        url,
+                        result.error.as_deref().unwrap_or("Unknown error"),
+                        result.response_time.as_millis()
+                    )
+                    .red()
+                );
             }
         }
 
@@ -723,7 +716,8 @@ impl LoadTester {
             .collect();
 
         let average_response_time = if !successful_response_times.is_empty() {
-            successful_response_times.iter().sum::<Duration>() / successful_response_times.len() as u32
+            successful_response_times.iter().sum::<Duration>()
+                / successful_response_times.len() as u32
         } else {
             Duration::from_millis(0)
         };
@@ -745,65 +739,100 @@ impl LoadTester {
 
         println!("{}", format!("Total Scenarios: {}", results.len()).blue());
         println!("{}", format!("Total Requests: {}", total_requests).blue());
-        println!("{}", format!("✓ Successful: {}", successful_requests).green());
+        println!(
+            "{}",
+            format!("✓ Successful: {}", successful_requests).green()
+        );
         println!("{}", format!("✗ Failed: {}", failed_requests).red());
         println!("{}", format!("Success Rate: {:.1}%", success_rate).yellow());
-        println!("{}", format!("Average Response Time: {}ms", average_response_time.as_millis()).cyan());
-        println!("{}", format!("Requests/Second: {:.1}", requests_per_second).magenta());
-        println!("{}", format!("Total Test Time: {}ms", total_time.as_millis()).purple());
-        
+        println!(
+            "{}",
+            format!(
+                "Average Response Time: {}ms",
+                average_response_time.as_millis()
+            )
+            .cyan()
+        );
+        println!(
+            "{}",
+            format!("Requests/Second: {:.1}", requests_per_second).magenta()
+        );
+        println!(
+            "{}",
+            format!("Total Test Time: {}ms", total_time.as_millis()).purple()
+        );
+
         if self.rampup_seconds > 0 {
-            println!("{}", format!("Ramp-up Period: {}s", self.rampup_seconds).purple());
+            println!(
+                "{}",
+                format!("Ramp-up Period: {}s", self.rampup_seconds).purple()
+            );
         }
 
         // Show detailed information only in verbose mode
         if self.verbose {
             // Show detailed failed request information
-            let failed_request_details: Vec<&RequestResult> = all_requests.iter().filter(|r| !r.success).copied().collect();
+            let failed_request_details: Vec<&RequestResult> = all_requests
+                .iter()
+                .filter(|r| !r.success)
+                .copied()
+                .collect();
             if !failed_request_details.is_empty() {
                 println!("{}", "\n❌ Failed Requests Details:".red().bold());
                 println!("{}", "─".repeat(80).purple());
-                
+
                 for (i, request) in failed_request_details.iter().enumerate() {
-                    println!("{}", format!("{}. {} {} ({})", 
-                        i + 1, 
-                        request.method, 
-                        request.url, 
-                        request.user_id
-                    ).red());
-                    
+                    println!(
+                        "{}",
+                        format!(
+                            "{}. {} {} ({})",
+                            i + 1,
+                            request.method,
+                            request.url,
+                            request.user_id
+                        )
+                        .red()
+                    );
+
                     if request.status > 0 {
                         println!("{}", format!("   Status: {}", request.status).yellow());
                     }
-                    
+
                     if let Some(error) = &request.error {
                         println!("{}", format!("   Error: {}", error).red());
                     }
-                    
-                    println!("{}", format!("   Response Time: {}ms", request.response_time.as_millis()).cyan());
+
+                    println!(
+                        "{}",
+                        format!("   Response Time: {}ms", request.response_time.as_millis()).cyan()
+                    );
                     println!();
                 }
             }
 
             // Show failed scenarios summary
-            let failed_scenarios: Vec<&UserScenarioResult> = results.iter().filter(|r| !r.success).collect();
+            let failed_scenarios: Vec<&UserScenarioResult> =
+                results.iter().filter(|r| !r.success).collect();
             if !failed_scenarios.is_empty() {
                 println!("{}", "📋 Failed Scenarios Summary:".red().bold());
                 for scenario in failed_scenarios {
                     let failed_count = scenario.requests.iter().filter(|r| !r.success).count();
                     let total_count = scenario.requests.len();
-                    println!("{}", format!("  {}: {}/{} requests failed", 
-                        scenario.user_id, 
-                        failed_count, 
-                        total_count
-                    ).red());
+                    println!(
+                        "{}",
+                        format!(
+                            "  {}: {}/{} requests failed",
+                            scenario.user_id, failed_count, total_count
+                        )
+                        .red()
+                    );
                 }
             }
 
             // Show request breakdown by endpoint
             println!("{}", "\n📈 Request Breakdown by Endpoint:".blue().bold());
             println!("{}", "─".repeat(80).purple());
-            
+
             let mut endpoint_stats = std::collections::HashMap::new();
             for request in &all_requests {
                 let endpoint = request.url.split('?').next().unwrap_or(&request.url);
@@ -814,22 +843,66 @@ impl LoadTester {
                     stats.1 += 1;
                 }
             }
-            
+
             for (endpoint, (success, failed)) in endpoint_stats {
                 let total = success + failed;
-                let success_rate = if total > 0 { (success as f64 / total as f64) * 100.0 } else { 0.0 };
-                let status_color = if success_rate >= 90.0 { "green" } else if success_rate >= 70.0 { "yellow" } else { "red" };
-                
+                let success_rate = if total > 0 {
+                    (success as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let status_color = if success_rate >= 90.0 {
+                    "green"
+                } else if success_rate >= 70.0 {
+                    "yellow"
+                } else {
+                    "red"
+                };
+
                 match status_color {
-                    "green" => println!("{}", format!("  ✓ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).green()),
-                    "yellow" => println!("{}", format!("  ⚠ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).yellow()),
-                    "red" => println!("{}", format!("  ✗ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).red()),
-                    _ => println!("{}", format!("  • {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate)),
+                    "green" => println!(
+                        "{}",
+                        format!(
+                            "  ✓ {}: {}/{} ({:.1}%)",
+                            endpoint, success, total, success_rate
+                        )
+                        .green()
+                    ),
+                    "yellow" => println!(
+                        "{}",
+                        format!(
+                            "  ⚠ {}: {}/{} ({:.1}%)",
+                            endpoint, success, total, success_rate
+                        )
+                        .yellow()
+                    ),
+                    "red" => println!(
+                        "{}",
+                        format!(
+                            "  ✗ {}: {}/{} ({:.1}%)",
+                            endpoint, success, total, success_rate
+                        )
+                        .red()
+                    ),
+                    _ => println!(
+                        "{}",
+                        format!(
+                            "  • {}: {}/{} ({:.1}%)",
+                            endpoint, success, total, success_rate
+                        )
+                    ),
                 }
             }
         } else if failed_requests > 0 {
             // In non-verbose mode, just show a summary of failures
-            println!("{}", format!("\n⚠️  {} requests failed. Use --verbose for detailed error information.", failed_requests).yellow());
+            println!(
+                "{}",
+                format!(
+                    "\n⚠️  {} requests failed. Use --verbose for detailed error information.",
+                    failed_requests
+                )
+                .yellow()
+            );
         }
 
         println!("{}", format!("\n{}", "═".repeat(50)).purple());

@@ -60,7 +60,10 @@ async fn main() -> anyhow::Result<()> {
     let endpoints = discovery.discover_endpoints().await?;
 
     if endpoints.is_empty() {
-        println!("{}", "⚠️  No endpoints found in SSM. Using fallback endpoints.".yellow());
+        println!(
+            "{}",
+            "⚠️  No endpoints found in SSM. Using fallback endpoints.".yellow()
+        );
     }
 
     // Initialize load tester
