@@ -44,9 +44,19 @@ impl LoadTester {
     }
 
     fn generate_users(&self) -> Vec<String> {
-        (1..=self.user_count)
-            .map(|i| format!("user{:04}", i))
-            .collect()
+        use rand::Rng;
+        use std::collections::HashSet;
+        
+        let mut rng = rand::thread_rng();
+        let mut user_ids = HashSet::new();
+        
+        // Generate unique random user IDs
+        while user_ids.len() < self.user_count {
+            let random_id = rng.gen_range(10000..99999);
+            user_ids.insert(format!("user{:05}", random_id));
+        }
+        
+        user_ids.into_iter().collect()
     }
 
     pub async fn run_load_test(&self) -> anyhow::Result<Vec<UserScenarioResult>> {
@@ -150,14 +160,8 @@ impl LoadTester {
             format!("🚀 All {} scenarios started, waiting for completion...", total_scenarios).green()
         );
 
-        // Start execution monitoring for long-running tests
-        if total_scenarios > 20 || self.rampup_seconds > 30 {
-            self.run_with_progress_monitoring(all_futures, total_scenarios, start_time).await
-        } else {
-            // For small tests, just run normally
-            let results = join_all(all_futures).await;
-            Ok(results)
-        }
+        // Always use progress monitoring for better user experience
+        self.run_with_progress_monitoring(all_futures, total_scenarios, start_time).await
     }
 
     async fn run_with_progress_monitoring(
@@ -207,8 +211,11 @@ impl LoadTester {
             let failed_requests = failed_requests.clone();
             
             tokio::spawn(async move {
+                // Adjust update frequency based on test size
+                let update_interval = if total_scenarios > 100 { 10 } else if total_scenarios > 20 { 5 } else { 2 };
+                
                 loop {
-                    sleep(Duration::from_secs(10)).await;
+                    sleep(Duration::from_secs(update_interval)).await;
                     
                     let completed = {
                         let count = completed_count.lock().unwrap();
@@ -336,54 +343,76 @@ impl LoadTester {
             .await;
         requests.push(type_search_result);
 
-        // Step 4: Parse pets from the first successful search and select one for adoption
-        let (selected_pet_id, selected_pet_type) = if list_all_pets_result.success {
-            // Try to parse the response to get pets
-            if let Ok(response) = self.client.get(&self.endpoints.petsearch).send().await {
-                if let Ok(text) = response.text().await {
-                    if let Ok(pets) = serde_json::from_str::<PetListResponse>(&text) {
-                        if !pets.is_empty() {
-                            let random_pet = &pets[rng.gen_range(0..pets.len())];
-                            (
-                                random_pet.petid.clone(),
-                                random_pet.pettype.clone().unwrap_or_else(|| random_pet_type.to_string())
-                            )
+        // Step 4: Adopt 3 pets - one of each type (puppy, kitten, bunny)
+        let pet_types_to_adopt = ["puppy", "kitten", "bunny"];
+        let mut adopted_pets = Vec::new();
+
+        for pet_type in &pet_types_to_adopt {
+            // Search for specific pet type
+            let specific_search_url = if self.endpoints.petsearch.ends_with('?') {
+                format!("{}pettype={}", self.endpoints.petsearch, pet_type)
+            } else {
+                format!("{}?pettype={}", self.endpoints.petsearch, pet_type)
+            };
+            let specific_search_result = self
+                .make_request(
+                    "GET",
+                    &specific_search_url,
+                    &user_id,
+                    None::<()>,
+                )
+                .await;
+            requests.push(specific_search_result.clone());
+
+            // Select a pet of this type for adoption
+            let selected_pet_id = if specific_search_result.success {
+                // Try to parse the response to get pets of this type
+                if let Ok(response) = self.client.get(&specific_search_url).send().await {
+                    if let Ok(text) = response.text().await {
+                        if let Ok(pets) = serde_json::from_str::<PetListResponse>(&text) {
+                            if !pets.is_empty() {
+                                let random_pet = &pets[rng.gen_range(0..pets.len())];
+                                random_pet.petid.clone()
+                            } else {
+                                format!("{}_{:03}", pet_type, rng.gen_range(1..1000))
+                            }
                         } else {
-                            (format!("pet{:03}", rng.gen_range(1..1000)), random_pet_type.to_string())
+                            format!("{}_{:03}", pet_type, rng.gen_range(1..1000))
                         }
                     } else {
-                        (format!("pet{:03}", rng.gen_range(1..1000)), random_pet_type.to_string())
+                        format!("{}_{:03}", pet_type, rng.gen_range(1..1000))
                     }
                 } else {
-                    (format!("pet{:03}", rng.gen_range(1..1000)), random_pet_type.to_string())
+                    format!("{}_{:03}", pet_type, rng.gen_range(1..1000))
                 }
             } else {
-                (format!("pet{:03}", rng.gen_range(1..1000)), random_pet_type.to_string())
-            }
-        } else {
-            success = false;
-            (format!("pet{:03}", rng.gen_range(1..1000)), random_pet_type.to_string())
-        };
+                success = false;
+                format!("{}_{:03}", pet_type, rng.gen_range(1..1000))
+            };
 
-        // Step 5: Pay for adoption using query parameters
-        let adoption_url = format!(
-            "{}?petId={}&petType={}&userId={}",
-            self.endpoints.payforadoption,
-            selected_pet_id,
-            selected_pet_type,
-            user_id
-        );
-        let adoption_result = self
-            .make_request(
-                "POST",
-                &adoption_url,
-                &user_id,
-                None::<()>,
-            )
-            .await;
-        requests.push(adoption_result);
+            // Pay for adoption of this pet
+            let adoption_url = format!(
+                "{}?petId={}&petType={}&userId={}",
+                self.endpoints.payforadoption,
+                selected_pet_id,
+                pet_type,
+                user_id
+            );
+            let adoption_result = self
+                .make_request(
+                    "POST",
+                    &adoption_url,
+                    &user_id,
+                    None::<()>,
+                )
+                .await;
+            requests.push(adoption_result);
 
-        // Step 6: Check adoptions list (verify adoption was recorded)
+            // Store adopted pet for cleanup later
+            adopted_pets.push((selected_pet_id, pet_type.to_string()));
+        }
+
+        // Step 5: Check adoptions list (verify adoptions were recorded)
         let adoptions_check_result = self
             .make_request(
                 "GET",
@@ -394,10 +423,10 @@ impl LoadTester {
             .await;
         requests.push(adoptions_check_result);
 
-        // Step 7: Comprehensive Pet Food Testing
+        // Step 6: Comprehensive Pet Food Testing
         let petfood_base = self.endpoints.petfood.replace("/api/foods", "");
         
-        // 7.1: List all foods
+        // 6.1: List all foods
         let food_list_result = self
             .make_request(
                 "GET",
@@ -408,7 +437,7 @@ impl LoadTester {
             .await;
         requests.push(food_list_result);
 
-        // 7.2: Search foods with filters (random combinations)
+        // 6.2: Search foods with filters (random combinations)
         let pet_types_food = ["puppy", "kitten", "bunny"];
         let max_prices = ["10", "25", "50", "100"];
         let search_terms = ["royal", "premium", "organic", "chicken"];
@@ -441,7 +470,7 @@ impl LoadTester {
             .await;
         requests.push(search_result);
 
-        // 7.3: Get specific food by ID (simulate getting a food ID from previous responses)
+        // 6.3: Get specific food by ID (simulate getting a food ID from previous responses)
         let food_ids = ["F046a4eca", "Fecd30d31", "F36a222eb", "Fc7f447a1", "F233c473c", "Ffb5ef0e2"];
         let random_food_id = food_ids[rng.gen_range(0..food_ids.len())];
         let food_detail_url = format!("{}/{}", self.endpoints.petfood, random_food_id);
@@ -455,7 +484,7 @@ impl LoadTester {
             .await;
         requests.push(food_detail_result);
 
-        // 7.4: Cart operations
+        // 6.4: Cart operations
         // List current cart
         let cart_list_url = format!("{}/api/cart/{}", petfood_base, user_id);
         let cart_list_result = self
@@ -499,7 +528,7 @@ impl LoadTester {
             .await;
         requests.push(update_cart_result);
 
-        // 7.5: Checkout process
+        // 6.5: Checkout process
         let checkout_url = format!("{}/api/cart/{}/checkout", petfood_base, user_id);
         let checkout_payload = serde_json::json!({
             "payment_method": {
@@ -538,7 +567,7 @@ impl LoadTester {
             .await;
         requests.push(checkout_result);
 
-        // Step 8: Cleanup operations
+        // Step 7: Cleanup operations
         // Empty the cart
         let empty_cart_url = format!("{}/api/cart/{}", petfood_base, user_id);
         let empty_cart_result = self
@@ -551,17 +580,19 @@ impl LoadTester {
             .await;
         requests.push(empty_cart_result);
 
-        // Clean up adoption (optional DELETE operations)
-        let cleanup_adoption_url = self.endpoints.payforadoption.replace("/api/completeadoption", &format!("/api/adoption/{}", selected_pet_id));
-        let cleanup_adoption_result = self
-            .make_request(
-                "DELETE",
-                &cleanup_adoption_url,
-                &user_id,
-                None::<()>,
-            )
-            .await;
-        requests.push(cleanup_adoption_result);
+        // Clean up all adoptions (optional DELETE operations)
+        for (pet_id, _pet_type) in adopted_pets {
+            let cleanup_adoption_url = self.endpoints.payforadoption.replace("/api/completeadoption", &format!("/api/adoption/{}", pet_id));
+            let cleanup_adoption_result = self
+                .make_request(
+                    "DELETE",
+                    &cleanup_adoption_url,
+                    &user_id,
+                    None::<()>,
+                )
+                .await;
+            requests.push(cleanup_adoption_result);
+        }
 
         // Check if any request failed
         success = requests.iter().all(|r| r.success);
@@ -725,74 +756,80 @@ impl LoadTester {
             println!("{}", format!("Ramp-up Period: {}s", self.rampup_seconds).purple());
         }
 
-        // Show detailed failed request information
-        let failed_requests: Vec<&RequestResult> = all_requests.iter().filter(|r| !r.success).copied().collect();
-        if !failed_requests.is_empty() {
-            println!("{}", "\n❌ Failed Requests Details:".red().bold());
+        // Show detailed information only in verbose mode
+        if self.verbose {
+            // Show detailed failed request information
+            let failed_request_details: Vec<&RequestResult> = all_requests.iter().filter(|r| !r.success).copied().collect();
+            if !failed_request_details.is_empty() {
+                println!("{}", "\n❌ Failed Requests Details:".red().bold());
+                println!("{}", "─".repeat(80).purple());
+                
+                for (i, request) in failed_request_details.iter().enumerate() {
+                    println!("{}", format!("{}. {} {} ({})", 
+                        i + 1, 
+                        request.method, 
+                        request.url, 
+                        request.user_id
+                    ).red());
+                    
+                    if request.status > 0 {
+                        println!("{}", format!("   Status: {}", request.status).yellow());
+                    }
+                    
+                    if let Some(error) = &request.error {
+                        println!("{}", format!("   Error: {}", error).red());
+                    }
+                    
+                    println!("{}", format!("   Response Time: {}ms", request.response_time.as_millis()).cyan());
+                    println!();
+                }
+            }
+
+            // Show failed scenarios summary
+            let failed_scenarios: Vec<&UserScenarioResult> = results.iter().filter(|r| !r.success).collect();
+            if !failed_scenarios.is_empty() {
+                println!("{}", "📋 Failed Scenarios Summary:".red().bold());
+                for scenario in failed_scenarios {
+                    let failed_count = scenario.requests.iter().filter(|r| !r.success).count();
+                    let total_count = scenario.requests.len();
+                    println!("{}", format!("  {}: {}/{} requests failed", 
+                        scenario.user_id, 
+                        failed_count, 
+                        total_count
+                    ).red());
+                }
+            }
+
+            // Show request breakdown by endpoint
+            println!("{}", "\n📈 Request Breakdown by Endpoint:".blue().bold());
             println!("{}", "─".repeat(80).purple());
             
-            for (i, request) in failed_requests.iter().enumerate() {
-                println!("{}", format!("{}. {} {} ({})", 
-                    i + 1, 
-                    request.method, 
-                    request.url, 
-                    request.user_id
-                ).red());
-                
-                if request.status > 0 {
-                    println!("{}", format!("   Status: {}", request.status).yellow());
+            let mut endpoint_stats = std::collections::HashMap::new();
+            for request in &all_requests {
+                let endpoint = request.url.split('?').next().unwrap_or(&request.url);
+                let stats = endpoint_stats.entry(endpoint.to_string()).or_insert((0, 0));
+                if request.success {
+                    stats.0 += 1;
+                } else {
+                    stats.1 += 1;
                 }
-                
-                if let Some(error) = &request.error {
-                    println!("{}", format!("   Error: {}", error).red());
-                }
-                
-                println!("{}", format!("   Response Time: {}ms", request.response_time.as_millis()).cyan());
-                println!();
             }
-        }
-
-        // Show failed scenarios summary
-        let failed_scenarios: Vec<&UserScenarioResult> = results.iter().filter(|r| !r.success).collect();
-        if !failed_scenarios.is_empty() {
-            println!("{}", "📋 Failed Scenarios Summary:".red().bold());
-            for scenario in failed_scenarios {
-                let failed_count = scenario.requests.iter().filter(|r| !r.success).count();
-                let total_count = scenario.requests.len();
-                println!("{}", format!("  {}: {}/{} requests failed", 
-                    scenario.user_id, 
-                    failed_count, 
-                    total_count
-                ).red());
-            }
-        }
-
-        // Show request breakdown by endpoint
-        println!("{}", "\n📈 Request Breakdown by Endpoint:".blue().bold());
-        println!("{}", "─".repeat(80).purple());
-        
-        let mut endpoint_stats = std::collections::HashMap::new();
-        for request in &all_requests {
-            let endpoint = request.url.split('?').next().unwrap_or(&request.url);
-            let stats = endpoint_stats.entry(endpoint.to_string()).or_insert((0, 0));
-            if request.success {
-                stats.0 += 1;
-            } else {
-                stats.1 += 1;
-            }
-        }
-        
-        for (endpoint, (success, failed)) in endpoint_stats {
-            let total = success + failed;
-            let success_rate = if total > 0 { (success as f64 / total as f64) * 100.0 } else { 0.0 };
-            let status_color = if success_rate >= 90.0 { "green" } else if success_rate >= 70.0 { "yellow" } else { "red" };
             
-            match status_color {
-                "green" => println!("{}", format!("  ✓ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).green()),
-                "yellow" => println!("{}", format!("  ⚠ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).yellow()),
-                "red" => println!("{}", format!("  ✗ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).red()),
-                _ => println!("{}", format!("  • {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate)),
+            for (endpoint, (success, failed)) in endpoint_stats {
+                let total = success + failed;
+                let success_rate = if total > 0 { (success as f64 / total as f64) * 100.0 } else { 0.0 };
+                let status_color = if success_rate >= 90.0 { "green" } else if success_rate >= 70.0 { "yellow" } else { "red" };
+                
+                match status_color {
+                    "green" => println!("{}", format!("  ✓ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).green()),
+                    "yellow" => println!("{}", format!("  ⚠ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).yellow()),
+                    "red" => println!("{}", format!("  ✗ {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate).red()),
+                    _ => println!("{}", format!("  • {}: {}/{} ({:.1}%)", endpoint, success, total, success_rate)),
+                }
             }
+        } else if failed_requests > 0 {
+            // In non-verbose mode, just show a summary of failures
+            println!("{}", format!("\n⚠️  {} requests failed. Use --verbose for detailed error information.", failed_requests).yellow());
         }
 
         println!("{}", format!("\n{}", "═".repeat(50)).purple());
