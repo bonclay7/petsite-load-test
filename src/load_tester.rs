@@ -553,17 +553,15 @@ impl LoadTester {
             .await;
         requests.push(empty_cart_result);
 
-        // Clean up all adoptions (optional DELETE operations)
-        for (pet_id, _pet_type) in adopted_pets {
-            let cleanup_adoption_url = self.endpoints.payforadoption.replace(
-                "/api/completeadoption",
-                &format!("/api/adoption/{}", pet_id),
-            );
-            let cleanup_adoption_result = self
-                .make_request("DELETE", &cleanup_adoption_url, &user_id, None::<()>)
-                .await;
-            requests.push(cleanup_adoption_result);
-        }
+        // Clean up all adoptions for this user (single DELETE operation)
+        let cleanup_adoption_url = self.endpoints.payforadoption.replace(
+            "/api/completeadoption",
+            &format!("/api/cleanupadoptions/{}", user_id),
+        );
+        let cleanup_adoption_result = self
+            .make_request("DELETE", &cleanup_adoption_url, &user_id, None::<()>)
+            .await;
+        requests.push(cleanup_adoption_result);
 
         // Check if any request failed
         success = requests.iter().all(|r| r.success);
