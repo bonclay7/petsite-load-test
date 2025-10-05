@@ -26,11 +26,8 @@ if [ "$USE_ECR" = "true" ]; then
     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REPO}:${IMAGE_TAG}
 
     echo "🔐 Logging into ECR..."
-    #aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
     echo "⬆️  Pushing to ECR..."
     docker push ${ECR_REPO}:${IMAGE_TAG}
-
-    # Update image reference in manifests
-    sed -i.bak "s|image: load-tester:latest|image: ${ECR_REPO}:${IMAGE_TAG}|g" k8s/*.yaml
 fi
